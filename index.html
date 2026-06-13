@@ -6,12 +6,9 @@
     <title>源吉香業 - 行動商品成本查詢系統</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* 隱藏橫向捲軸但保持可滑動 */
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        
-        /* 確保輸入框在 iOS 不會自動放大 */
-        input[type="text"] { font-size: 16px; }
+        input[type="text"], input[type="number"] { font-size: 16px; }
     </style>
 </head>
 <body class="bg-[#121212] text-gray-200 font-sans antialiased flex flex-col min-h-screen">
@@ -24,6 +21,26 @@
         <div class="px-4 mt-3">
             <input type="text" id="searchInput" placeholder="輸入關鍵字搜尋 (名稱、編號)..." 
                 class="w-full bg-[#2a2a2a] text-white border border-gray-600 rounded-lg p-3 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors placeholder-gray-400">
+        </div>
+
+        <div class="px-4 mt-3">
+            <div class="bg-blue-950/40 border border-blue-900/60 rounded-xl p-3">
+                <div class="flex items-center gap-2 justify-between">
+                    <span class="text-sm font-semibold text-blue-400 shrink-0">📈 報價計算成數:</span>
+                    <div class="flex items-center gap-1 flex-grow max-w-[120px]">
+                        <input type="number" id="markupInput" value="0" min="0" max="500" step="5"
+                            class="w-full bg-[#2a2a2a] text-yellow-400 font-bold text-center border border-gray-600 rounded-lg p-1.5 focus:outline-none focus:border-blue-500">
+                        <span class="text-gray-400 font-bold text-sm">%</span>
+                    </div>
+                </div>
+                <div class="flex gap-2 mt-2 overflow-x-auto no-scrollbar">
+                    <button onclick="setMarkup(0)" class="bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 px-3 py-1.5 rounded-md border border-gray-700 shrink-0">原成本 (0%)</button>
+                    <button onclick="setMarkup(10)" class="bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 px-3 py-1.5 rounded-md border border-gray-700 shrink-0">+10%</button>
+                    <button onclick="setMarkup(15)" class="bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 px-3 py-1.5 rounded-md border border-gray-700 shrink-0">+15%</button>
+                    <button onclick="setMarkup(20)" class="bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 px-3 py-1.5 rounded-md border border-gray-700 shrink-0">+20%</button>
+                    <button onclick="setMarkup(30)" class="bg-gray-800 hover:bg-gray-700 text-xs text-gray-300 px-3 py-1.5 rounded-md border border-gray-700 shrink-0">+30%</button>
+                </div>
+            </div>
         </div>
 
         <div class="px-4 mt-3">
@@ -57,37 +74,49 @@
             products: [],
             categories: [],
             currentCategory: '全部商品',
-            searchKeyword: ''
+            searchKeyword: '',
+            markupPercent: 0 // 💡 新增：利潤加成百分比
         };
 
-        // DOM 元素參考
         const elements = {
             fileInput: document.getElementById('csvFileInput'),
             searchInput: document.getElementById('searchInput'),
+            markupInput: document.getElementById('markupInput'),
             categoryContainer: document.getElementById('categoryContainer'),
             productList: document.getElementById('productList'),
             statusMessage: document.getElementById('statusMessage')
         };
 
-        // 預期欄位對應
         const EXPECTED_HEADERS = ['貨品編號', '貨品名稱', '單位', '類別名稱', '標準成本', '貨品規格'];
 
-        // 初始化
         function init() {
             loadFromStorage();
             bindEvents();
         }
 
-        // 綁定事件
         function bindEvents() {
             elements.fileInput.addEventListener('change', handleFileUpload);
+            
             elements.searchInput.addEventListener('input', (e) => {
                 state.searchKeyword = e.target.value.trim().toLowerCase();
                 renderProducts();
             });
+
+            // 💡 新增：監聽加成輸入框即時重新渲染
+            elements.markupInput.addEventListener('input', (e) => {
+                let val = parseFloat(e.target.value);
+                state.markupPercent = isNaN(val) || val < 0 ? 0 : val;
+                renderProducts();
+            });
         }
 
-        // 從 localStorage 載入資料
+        // 💡 新增：快捷鍵修改加成
+        window.setMarkup = function(percent) {
+            state.markupPercent = percent;
+            elements.markupInput.value = percent;
+            renderProducts();
+        }
+
         function loadFromStorage() {
             const storedData = localStorage.getItem('yuanji_products');
             if (storedData) {
@@ -103,7 +132,6 @@
             }
         }
 
-        // 處理檔案上傳與解碼 (Big5)
         function handleFileUpload(event) {
             const file = event.target.files[0];
             if (!file) return;
@@ -117,7 +145,6 @@
                     const arrayBuffer = e.target.result;
                     const decoder = new TextDecoder('big5');
                     const csvText = decoder.decode(arrayBuffer);
-                    
                     parseCSVData(csvText);
                 } catch (error) {
                     alert('解碼失敗，請確認檔案是否為正確的 CSV 格式。');
@@ -125,11 +152,9 @@
                 }
             };
             reader.readAsArrayBuffer(file);
-            // 重置 input，允許重複上傳同名檔案
             event.target.value = '';
         }
 
-        // 解析 CSV (具備處理引號內逗號的能力)
         function parseCSVData(csvText) {
             const lines = [];
             let currentLine = [];
@@ -149,11 +174,9 @@
                     currentLine.push(currentCell.trim());
                     currentCell = '';
                 } else if ((char === '\n' || char === '\r') && !inQuotes) {
-                    if (char === '\r' && csvText[i + 1] === '\n') i++; // Skip \n
+                    if (char === '\r' && csvText[i + 1] === '\n') i++;
                     currentLine.push(currentCell.trim());
-                    if (currentLine.join('').trim() !== '') {
-                        lines.push(currentLine);
-                    }
+                    if (currentLine.join('').trim() !== '') lines.push(currentLine);
                     currentLine = [];
                     currentCell = '';
                 } else {
@@ -170,14 +193,12 @@
                 return;
             }
 
-            // 建立欄位索引映射
             const headers = lines[0].map(h => h.replace(/^"|"$/g, '').trim());
             const headerIndex = {};
             EXPECTED_HEADERS.forEach(reqHeader => {
                 headerIndex[reqHeader] = headers.findIndex(h => h === reqHeader);
             });
 
-            // 轉換為物件陣列
             const products = [];
             for (let i = 1; i < lines.length; i++) {
                 const row = lines[i];
@@ -193,7 +214,6 @@
                 if (isValid) products.push(product);
             }
 
-            // 更新狀態與快取
             state.products = products;
             try {
                 localStorage.setItem('yuanji_products', JSON.stringify(products));
@@ -206,13 +226,13 @@
             state.searchKeyword = '';
             elements.searchInput.value = '';
             state.currentCategory = '全部商品';
+            setMarkup(0);
             
             extractCategories();
             renderCategories();
             renderProducts();
         }
 
-        // 提取分類標籤
         function extractCategories() {
             const catSet = new Set();
             state.products.forEach(p => {
@@ -221,7 +241,6 @@
             state.categories = ['全部商品', ...Array.from(catSet)];
         }
 
-        // 渲染分類標籤
         function renderCategories() {
             elements.categoryContainer.innerHTML = state.categories.map(cat => `
                 <button onclick="setCategory('${cat}')" 
@@ -234,23 +253,20 @@
             `).join('');
         }
 
-        // 設定目前分類
         window.setCategory = function(category) {
             state.currentCategory = category;
             renderCategories();
             renderProducts();
         }
 
-        // 渲染商品卡片列表
+        // 渲染商品卡片列表（包含報價動態計算）
         function renderProducts() {
             let filtered = state.products;
 
-            // 1. 分類過濾
             if (state.currentCategory !== '全部商品') {
                 filtered = filtered.filter(p => p['類別名稱'] === state.currentCategory);
             }
 
-            // 2. 關鍵字過濾
             if (state.searchKeyword) {
                 filtered = filtered.filter(p => 
                     (p['貨品名稱'] && p['貨品名稱'].toLowerCase().includes(state.searchKeyword)) ||
@@ -259,7 +275,6 @@
                 );
             }
 
-            // UI 狀態處理
             if (state.products.length === 0) {
                 elements.statusMessage.textContent = '請先點擊下方匯入商品成本 CSV 檔案。';
                 elements.statusMessage.style.display = 'block';
@@ -276,39 +291,46 @@
 
             elements.statusMessage.style.display = 'none';
 
-            // 產出卡片 HTML
-            const html = filtered.map(p => `
-                <div class="bg-[#1e1e1e] border border-gray-800 rounded-xl p-4 shadow-sm relative overflow-hidden">
-                    <div class="flex justify-between items-start mb-2">
-                        <div class="pr-4 flex-grow">
-                            <h2 class="text-xl font-bold text-gray-100 leading-tight">${p['貨品名稱'] || '無名稱'}</h2>
+            const html = filtered.map(p => {
+                // 核心計算邏輯
+                const cost = parseFloat(p['標準成本']) || 0;
+                const quote = state.markupPercent > 0 
+                    ? Math.round(cost * (1 + state.markupPercent / 100)) 
+                    : cost;
+
+                return `
+                    <div class="bg-[#1e1e1e] border border-gray-800 rounded-xl p-4 shadow-sm relative overflow-hidden">
+                        <div class="flex justify-between items-start mb-2">
+                            <div class="pr-4 flex-grow">
+                                <h2 class="text-xl font-bold text-gray-100 leading-tight">${p['貨品名稱'] || '無名稱'}</h2>
+                            </div>
+                            <div class="text-right flex-shrink-0">
+                                <div class="text-emerald-400 text-2xl font-black tracking-tight">$${quote}</div>
+                                ${state.markupPercent > 0 ? `<div class="text-xs text-gray-500 line-through">底: $${cost}</div>` : ''}
+                            </div>
                         </div>
-                        <div class="text-right flex-shrink-0">
-                            <div class="text-yellow-400 text-2xl font-black tracking-tight border-b border-yellow-400/30 pb-1">$${p['標準成本'] || '0'}</div>
+                        
+                        <div class="grid grid-cols-2 gap-2 mt-3 text-sm">
+                            <div class="text-gray-400">
+                                編號: <span class="text-gray-200 font-mono">${p['貨品編號'] || '-'}</span>
+                            </div>
+                            <div class="text-gray-400 text-right">
+                                單位: <span class="text-gray-200">${p['單位'] || '-'}</span>
+                            </div>
                         </div>
+                        
+                        ${p['貨品規格'] ? `
+                        <div class="mt-2 pt-2 border-t border-gray-700 text-sm">
+                            <span class="text-gray-500">規格: </span>
+                            <span class="text-gray-300">${p['貨品規格']}</span>
+                        </div>` : ''}
                     </div>
-                    
-                    <div class="grid grid-cols-2 gap-2 mt-3 text-sm">
-                        <div class="text-gray-400">
-                            編號: <span class="text-gray-200 font-mono">${p['貨品編號'] || '-'}</span>
-                        </div>
-                        <div class="text-gray-400 text-right">
-                            單位: <span class="text-gray-200">${p['單位'] || '-'}</span>
-                        </div>
-                    </div>
-                    
-                    ${p['貨品規格'] ? `
-                    <div class="mt-2 pt-2 border-t border-gray-700 text-sm">
-                        <span class="text-gray-500">規格: </span>
-                        <span class="text-gray-300">${p['貨品規格']}</span>
-                    </div>` : ''}
-                </div>
-            `).join('');
+                `;
+            }).join('');
 
             elements.productList.innerHTML = html;
         }
 
-        // 啟動程式
         init();
     </script>
 </body>
