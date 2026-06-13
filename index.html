@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>源吉香業 - 行動商品成本查詢系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 隱藏橫向捲軸但保持可滑動 */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* 確保輸入框在 iOS 不會自動放大 */
+        input[type="text"] { font-size: 16px; }
+    </style>
+</head>
+<body class="bg-[#121212] text-gray-200 font-sans antialiased flex flex-col min-h-screen">
+
+    <header class="sticky top-0 z-50 bg-[#1e1e1e] shadow-md shadow-black/50 pb-2">
+        <div class="px-4 py-3 bg-black/40">
+            <h1 class="text-lg font-bold text-white tracking-wider">源吉香業 - 行動商品成本查詢系統</h1>
+        </div>
+        
+        <div class="px-4 mt-3">
+            <input type="text" id="searchInput" placeholder="輸入關鍵字搜尋 (名稱、編號)..." 
+                class="w-full bg-[#2a2a2a] text-white border border-gray-600 rounded-lg p-3 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors placeholder-gray-400">
+        </div>
+
+        <div class="px-4 mt-3">
+            <div id="categoryContainer" class="flex overflow-x-auto gap-2 no-scrollbar pb-1">
+                </div>
+        </div>
+    </header>
+
+    <main class="flex-grow px-4 py-4 relative">
+        <div id="statusMessage" class="text-center text-gray-400 mt-10">
+            請先點擊下方匯入商品成本 CSV 檔案。
+        </div>
+        <div id="productList" class="grid grid-cols-1 gap-4">
+            </div>
+    </main>
+
+    <footer class="bg-[#1e1e1e] border-t border-gray-800 p-4 mt-auto">
+        <div class="flex flex-col items-center">
+            <label for="csvFileInput" class="w-full md:w-auto bg-gray-700 hover:bg-gray-600 text-gray-200 font-semibold py-3 px-6 rounded-lg shadow cursor-pointer text-center transition-colors flex items-center justify-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                更新/匯入商品成本 (CSV)
+            </label>
+            <input type="file" id="csvFileInput" accept=".csv" class="hidden">
+            <p class="text-xs text-gray-500 mt-2">支援 Big5 編碼格式，資料將安全儲存於本機</p>
+        </div>
+    </footer>
+
+    <script>
+        // 核心狀態管理
+        const state = {
+            products: [],
+            categories: [],
+            currentCategory: '全部商品',
+            searchKeyword: ''
+        };
+
+        // DOM 元素參考
+        const elements = {
+            fileInput: document.getElementById('csvFileInput'),
+            searchInput: document.getElementById('searchInput'),
+            categoryContainer: document.getElementById('categoryContainer'),
+            productList: document.getElementById('productList'),
+            statusMessage: document.getElementById('statusMessage')
+        };
+
+        // 預期欄位對應
+        const EXPECTED_HEADERS = ['貨品編號', '貨品名稱', '單位', '類別名稱', '標準成本', '貨品規格'];
+
+        // 初始化
+        function init() {
+            loadFromStorage();
+            bindEvents();
+        }
+
+        // 綁定事件
+        function bindEvents() {
+            elements.fileInput.addEventListener('change', handleFileUpload);
+            elements.searchInput.addEventListener('input', (e) => {
+                state.searchKeyword = e.target.value.trim().toLowerCase();
+                renderProducts();
+            });
+        }
+
+        // 從 localStorage 載入資料
+        function loadFromStorage() {
+            const storedData = localStorage.getItem('yuanji_products');
+            if (storedData) {
+                try {
+                    state.products = JSON.parse(storedData);
+                    extractCategories();
+                    renderCategories();
+                    renderProducts();
+                } catch (e) {
+                    console.error('儲存資料解析失敗', e);
+                    elements.statusMessage.textContent = '資料讀取失敗，請重新匯入檔案。';
+                }
+            }
+        }
+
+        // 處理檔案上傳與解碼 (Big5)
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            elements.statusMessage.textContent = '讀取中...';
+            elements.productList.innerHTML = '';
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const arrayBuffer = e.target.result;
+                    const decoder = new TextDecoder('big5');
+                    const csvText = decoder.decode(arrayBuffer);
+                    
+                    parseCSVData(csvText);
+                } catch (error) {
+                    alert('解碼失敗，請確認檔案是否為正確的 CSV 格式。');
+                    elements.statusMessage.textContent = '檔案解析失敗。';
+                }
+            };
+            reader.readAsArrayBuffer(file);
+            // 重置 input，允許重複上傳同名檔案
+            event.target.value = '';
+        }
+
+        // 解析 CSV (具備處理引號內逗號的能力)
+        function parseCSVData(csvText) {
+            const lines = [];
+            let currentLine = [];
+            let currentCell = '';
+            let inQuotes = false;
+
+            for (let i = 0; i < csvText.length; i++) {
+                const char = csvText[i];
+                if (char === '"') {
+                    if (inQuotes && csvText[i + 1] === '"') {
+                        currentCell += '"';
+                        i++;
+                    } else {
+                        inQuotes = !inQuotes;
+                    }
+                } else if (char === ',' && !inQuotes) {
+                    currentLine.push(currentCell.trim());
+                    currentCell = '';
+                } else if ((char === '\n' || char === '\r') && !inQuotes) {
+                    if (char === '\r' && csvText[i + 1] === '\n') i++; // Skip \n
+                    currentLine.push(currentCell.trim());
+                    if (currentLine.join('').trim() !== '') {
+                        lines.push(currentLine);
+                    }
+                    currentLine = [];
+                    currentCell = '';
+                } else {
+                    currentCell += char;
+                }
+            }
+            if (currentCell || currentLine.length > 0) {
+                currentLine.push(currentCell.trim());
+                lines.push(currentLine);
+            }
+
+            if (lines.length < 2) {
+                alert('檔案格式錯誤或無資料');
+                return;
+            }
+
+            // 建立欄位索引映射
+            const headers = lines[0].map(h => h.replace(/^"|"$/g, '').trim());
+            const headerIndex = {};
+            EXPECTED_HEADERS.forEach(reqHeader => {
+                headerIndex[reqHeader] = headers.findIndex(h => h === reqHeader);
+            });
+
+            // 轉換為物件陣列
+            const products = [];
+            for (let i = 1; i < lines.length; i++) {
+                const row = lines[i];
+                const product = {};
+                let isValid = false;
+
+                EXPECTED_HEADERS.forEach(key => {
+                    const idx = headerIndex[key];
+                    product[key] = (idx !== -1 && row[idx] !== undefined) ? row[idx].replace(/^"|"$/g, '').trim() : '';
+                    if (product[key]) isValid = true;
+                });
+
+                if (isValid) products.push(product);
+            }
+
+            // 更新狀態與快取
+            state.products = products;
+            try {
+                localStorage.setItem('yuanji_products', JSON.stringify(products));
+            } catch (e) {
+                if (e.name === 'QuotaExceededError') {
+                    alert('資料量過大，無法完全儲存於瀏覽器中。本次查詢有效，但關閉後需重新匯入。');
+                }
+            }
+            
+            state.searchKeyword = '';
+            elements.searchInput.value = '';
+            state.currentCategory = '全部商品';
+            
+            extractCategories();
+            renderCategories();
+            renderProducts();
+        }
+
+        // 提取分類標籤
+        function extractCategories() {
+            const catSet = new Set();
+            state.products.forEach(p => {
+                if (p['類別名稱']) catSet.add(p['類別名稱']);
+            });
+            state.categories = ['全部商品', ...Array.from(catSet)];
+        }
+
+        // 渲染分類標籤
+        function renderCategories() {
+            elements.categoryContainer.innerHTML = state.categories.map(cat => `
+                <button onclick="setCategory('${cat}')" 
+                    class="whitespace-nowrap px-4 py-2 rounded-full text-sm font-medium transition-colors border 
+                    ${state.currentCategory === cat 
+                        ? 'bg-blue-600 text-white border-blue-600' 
+                        : 'bg-[#2a2a2a] text-gray-300 border-gray-600 hover:bg-gray-700'}">
+                    ${cat}
+                </button>
+            `).join('');
+        }
+
+        // 設定目前分類
+        window.setCategory = function(category) {
+            state.currentCategory = category;
+            renderCategories();
+            renderProducts();
+        }
+
+        // 渲染商品卡片列表
+        function renderProducts() {
+            let filtered = state.products;
+
+            // 1. 分類過濾
+            if (state.currentCategory !== '全部商品') {
+                filtered = filtered.filter(p => p['類別名稱'] === state.currentCategory);
+            }
+
+            // 2. 關鍵字過濾
+            if (state.searchKeyword) {
+                filtered = filtered.filter(p => 
+                    (p['貨品名稱'] && p['貨品名稱'].toLowerCase().includes(state.searchKeyword)) ||
+                    (p['貨品編號'] && p['貨品編號'].toLowerCase().includes(state.searchKeyword)) ||
+                    (p['貨品規格'] && p['貨品規格'].toLowerCase().includes(state.searchKeyword))
+                );
+            }
+
+            // UI 狀態處理
+            if (state.products.length === 0) {
+                elements.statusMessage.textContent = '請先點擊下方匯入商品成本 CSV 檔案。';
+                elements.statusMessage.style.display = 'block';
+                elements.productList.innerHTML = '';
+                return;
+            }
+
+            if (filtered.length === 0) {
+                elements.statusMessage.textContent = '未找到相關商品，請嘗試其他關鍵字或分類。';
+                elements.statusMessage.style.display = 'block';
+                elements.productList.innerHTML = '';
+                return;
+            }
+
+            elements.statusMessage.style.display = 'none';
+
+            // 產出卡片 HTML
+            const html = filtered.map(p => `
+                <div class="bg-[#1e1e1e] border border-gray-800 rounded-xl p-4 shadow-sm relative overflow-hidden">
+                    <div class="flex justify-between items-start mb-2">
+                        <div class="pr-4 flex-grow">
+                            <h2 class="text-xl font-bold text-gray-100 leading-tight">${p['貨品名稱'] || '無名稱'}</h2>
+                        </div>
+                        <div class="text-right flex-shrink-0">
+                            <div class="text-yellow-400 text-2xl font-black tracking-tight border-b border-yellow-400/30 pb-1">$${p['標準成本'] || '0'}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-2 mt-3 text-sm">
+                        <div class="text-gray-400">
+                            編號: <span class="text-gray-200 font-mono">${p['貨品編號'] || '-'}</span>
+                        </div>
+                        <div class="text-gray-400 text-right">
+                            單位: <span class="text-gray-200">${p['單位'] || '-'}</span>
+                        </div>
+                    </div>
+                    
+                    ${p['貨品規格'] ? `
+                    <div class="mt-2 pt-2 border-t border-gray-700 text-sm">
+                        <span class="text-gray-500">規格: </span>
+                        <span class="text-gray-300">${p['貨品規格']}</span>
+                    </div>` : ''}
+                </div>
+            `).join('');
+
+            elements.productList.innerHTML = html;
+        }
+
+        // 啟動程式
+        init();
+    </script>
+</body>
+</html>
